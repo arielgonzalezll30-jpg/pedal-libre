@@ -11,4 +11,4 @@ Aplicación para ciclistas: seguimiento de rutas, estadísticas y más.
 - Por definir
 
 ## Licencia
-MIT****
+MIT
