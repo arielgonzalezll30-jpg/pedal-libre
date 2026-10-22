@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>pedal-libre</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --card: #141d30;
+    --line: #243049;
+    --text: #e8edf7;
+    --muted: #8a97b1;
+    --accent: #3ddc97;
+    --warn: #ffb547;
+    --danger: #ff6b6b;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom)); }
+  main { max-width: 480px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 18px 0 12px; }
+  h1 { margin: 0; font-size: 1.4rem; letter-spacing: .3px; }
+  h1 span { color: var(--accent); }
+  #estado { font-size: .85rem; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+  .card .label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .card .valor { font-size: 2rem; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card .unidad { font-size: .9rem; font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .grande { grid-column: 1 / -1; }
+  .grande .valor { font-size: 3rem; color: var(--accent); }
+  canvas { width: 100%; height: 220px; display: block; background: var(--card);
+    border: 1px solid var(--line); border-radius: 14px; margin-top: 10px; }
+  .botones { display: flex; gap: 10px; margin-top: 12px; }
+  button { flex: 1; font: inherit; font-weight: 600; font-size: 1.05rem; padding: 16px 10px;
+    border: 0; border-radius: 14px; color: #07111f; background: var(--accent); cursor: pointer; }
+  button.sec { background: var(--card); color: var(--text); border: 1px solid var(--line); }
+  button.pausa { background: var(--warn); }
+  button.stop { background: var(--danger); }
+  button[hidden] { display: none; }
+  button:active { transform: scale(.98); }
+  #aviso { margin: 12px 2px 0; font-size: .85rem; color: var(--warn); min-height: 1.2em; }
+  h2 { font-size: 1.05rem; margin: 26px 0 10px; display: flex; justify-content: space-between; align-items: center; }
+  h2 button { flex: none; padding: 6px 12px; font-size: .8rem; font-weight: 500; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  li { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    display: flex; justify-content: space-between; gap: 10px; font-size: .92rem; }
+  li .fecha { color: var(--muted); font-size: .8rem; }
+  li .datos { text-align: right; font-variant-numeric: tabular-nums; }
+  .vacio { color: var(--muted); font-size: .9rem; padding: 6px 2px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>pedal<span>-libre</span></h1>
+    <div id="estado">Listo</div>
+  </header>
+
+  <section class="grid" aria-label="Estadísticas">
+    <div class="card grande">
+      <div class="label">Distancia</div>
+      <div class="valor"><span id="dist">0.00</span><span class="unidad">km</span></div>
+    </div>
+    <div class="card">
+      <div class="label">Tiempo</div>
+      <div class="valor" id="tiempo">00:00</div>
+    </div>
+    <div class="card">
+      <div class="label">Velocidad</div>
+      <div class="valor"><span id="vel">0.0</span><span class="unidad">km/h</span></div>
+    </div>
+    <div class="card grande">
+      <div class="label">Velocidad media</div>
+      <div class="valor"><span id="media">0.0</span><span class="unidad">km/h</span></div>
+    </div>
+  </section>
+
+  <canvas id="mapa" aria-label="Trazado de la ruta"></canvas>
+
+  <div class="botones">
+    <button id="btnInicio">Iniciar</button>
+    <button id="btnPausa" class="pausa" hidden>Pausar</button>
+    <button id="btnFin" class="stop" hidden>Terminar</button>
+  </div>
+  <div id="aviso" role="status"></div>
+
+  <h2>Salidas guardadas <button id="btnBorrar" class="sec">Borrar todo</button></h2>
+  <ul id="historial"></ul>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Estado ----------
+  var watchId = null;
+  var corriendo = false;
+  var puntos = [];            // {lat, lon, salto}
+  var ultimo = null;          // último punto válido para medir distancia
+  var distM = 0;              // metros
+  var acumMs = 0;             // tiempo acumulado en ms
+  var inicioTramo = 0;        // instante en que arrancó el tramo actual
+  var velActual = 0;          // km/h
+  var wakeLock = null;
+  var KEY = "pedal-libre:salidas";
+
+  // ---------- Elementos ----------
+  var $ = function (id) { return document.getElementById(id); };
+  var elDist = $("dist"), elTiempo = $("tiempo"), elVel = $("vel"), elMedia = $("media");
+  var elEstado = $("estado"), elAviso = $("aviso"), elHist = $("historial");
+  var btnInicio = $("btnInicio"), btnPausa = $("btnPausa"), btnFin = $("btnFin"), btnBorrar = $("btnBorrar");
+  var canvas = $("mapa"), ctx = canvas.getContext("2d");
+
+  // ---------- Utilidades ----------
+  function haversine(a, b) {
+    var R = 6371000, rad = Math.PI / 180;
+    var dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function fmtTiempo(ms) {
+    var s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    return (h > 0 ? h + ":" + pad(m) : pad(m)) + ":" + pad(s % 60);
+  }
+  function msTotal() { return acumMs + (corriendo ? Date.now() - inicioTramo : 0); }
+  function aviso(t) { elAviso.textContent = t || ""; }
+
+  // ---------- Pantalla ----------
+  function actualizar() {
+    var ms = msTotal(), km = distM / 1000, horas = ms / 3600000;
+    elDist.textContent = km.toFixed(2);
+    elTiempo.textContent = fmtTiempo(ms);
+    elVel.textContent = velActual.toFixed(1);
+    elMedia.textContent = (horas > 0 ? km / horas : 0).toFixed(1);
+  }
+
+  function dibujar() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (puntos.length < 1) {
+      ctx.fillStyle = "#8a97b1";
+      ctx.font = "14px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Tu ruta aparecerá aquí", w / 2, h / 2);
+      return;
+    }
+
+    var latMin = Infinity, latMax = -Infinity, lonMin = Infinity, lonMax = -Infinity;
+    puntos.forEach(function (p) {
+      if (p.lat < latMin) latMin = p.lat; if (p.lat > latMax) latMax = p.lat;
+      if (p.lon < lonMin) lonMin = p.lon; if (p.lon > lonMax) lonMax = p.lon;
+    });
+    var k = Math.cos(((latMin + latMax) / 2) * Math.PI / 180);
+    var ancho = Math.max((lonMax - lonMin) * k, 1e-5), alto = Math.max(latMax - latMin, 1e-5);
+    var margen = 22;
+    var escala = Math.min((w - 2 * margen) / ancho, (h - 2 * margen) / alto);
+    var offX = (w - ancho * escala) / 2, offY = (h - alto * escala) / 2;
+    function xy(p) {
+      return [offX + (p.lon - lonMin) * k * escala, h - (offY + (p.lat - latMin) * escala)];
+    }
+
+    ctx.lineWidth = 4; ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.strokeStyle = "#3ddc97";
+    ctx.beginPath();
+    puntos.forEach(function (p, i) {
+      var c = xy(p);
+      if (i === 0 || p.salto) ctx.moveTo(c[0], c[1]); else ctx.lineTo(c[0], c[1]);
+    });
+    ctx.stroke();
+
+    var ini = xy(puntos[0]), fin = xy(puntos[puntos.length - 1]);
+    ctx.fillStyle = "#ffb547";
+    ctx.beginPath(); ctx.arc(ini[0], ini[1], 6, 0, 7); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(fin[0], fin[1], 7, 0, 7); ctx.fill();
+    ctx.fillStyle = "#3ddc97";
+    ctx.beginPath(); ctx.arc(fin[0], fin[1], 4, 0, 7); ctx.fill();
+  }
+
+  // ---------- GPS ----------
+  function alPosicion(pos) {
+    var c = pos.coords;
+    if (c.accuracy > 30) { aviso("Señal GPS débil (±" + Math.round(c.accuracy) + " m)…"); return; }
+    aviso("");
+    var p = { lat: c.latitude, lon: c.longitude, salto: !ultimo };
+    if (ultimo) {
+      var d = haversine(ultimo, p);
+      if (d < 3) { // ruido del GPS parado
+        velActual = 0; actualizar(); return;
+      }
+      distM += d;
+    }
+    velActual = (c.speed != null && c.speed >= 0) ? c.speed * 3.6 : velActual;
+    puntos.push(p);
+    ultimo = p;
+    actualizar();
+    dibujar();
+  }
+
+  function alError(err) {
+    var msg = {
+      1: "Permiso de ubicación denegado. Actívalo en el navegador para medir tu ruta.",
+      2: "No se pudo obtener la ubicación.",
+      3: "La ubicación tardó demasiado en responder."
+    };
+    aviso(msg[err.code] || "Error de GPS.");
+    if (err.code === 1) pausar();
+  }
+
+  function activarPantalla() {
+    try {
+      if (navigator.wakeLock) {
+        navigator.wakeLock.request("screen").then(function (l) { wakeLock = l; }).catch(function () {});
+      }
+    } catch (e) {}
+  }
+  function soltarPantalla() {
+    try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) {}
+  }
+
+  // ---------- Controles ----------
+  function arrancar() {
+    if (!("geolocation" in navigator)) { aviso("Este navegador no tiene geolocalización."); return; }
+    corriendo = true;
+    inicioTramo = Date.now();
+    ultimo = null; // evita contar el salto de distancia mientras estuvo en pausa
+    watchId = navigator.geolocation.watchPosition(alPosicion, alError,
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 });
+    activarPantalla();
+    elEstado.textContent = "Grabando";
+    btnInicio.hidden = true; btnPausa.hidden = false; btnFin.hidden = false;
+    btnPausa.textContent = "Pausar";
+  }
+
+  function pausar() {
+    if (!corriendo) return;
+    acumMs += Date.now() - inicioTramo;
+    corriendo = false;
+    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    soltarPantalla();
+    velActual = 0;
+    elEstado.textContent = "En pausa";
+    btnPausa.textContent = "Continuar";
+    actualizar();
+  }
+
+  function continuar() { arrancar(); btnPausa.textContent = "Pausar"; }
+
+  function terminar() {
+    pausar();
+    if (distM >= 20) {
+      var lista = leer();
+      lista.unshift({ fecha: Date.now(), dist: distM, ms: acumMs });
+      guardar(lista.slice(0, 50));
+    }
+    reiniciar();
+    pintarHistorial();
+  }
+
+  function reiniciar() {
+    puntos = []; ultimo = null; distM = 0; acumMs = 0; velActual = 0; corriendo = false;
+    elEstado.textContent = "Listo";
+    btnInicio.hidden = false; btnPausa.hidden = true; btnFin.hidden = true;
+    aviso("");
+    actualizar(); dibujar();
+  }
+
+  // ---------- Historial (localStorage) ----------
+  function leer() {
+    try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) { return []; }
+  }
+  function guardar(lista) {
+    try { localStorage.setItem(KEY, JSON.stringify(lista)); } catch (e) {}
+  }
+  function pintarHistorial() {
+    var lista = leer();
+    elHist.innerHTML = "";
+    if (!lista.length) {
+      var v = document.createElement("div");
+      v.className = "vacio";
+      v.textContent = "Aún no hay salidas guardadas.";
+      elHist.appendChild(v);
+      return;
+    }
+    lista.forEach(function (s) {
+      var li = document.createElement("li");
+      var f = new Date(s.fecha);
+      var km = s.dist / 1000, media = s.ms > 0 ? km / (s.ms / 3600000) : 0;
+      var izq = document.createElement("div");
+      izq.innerHTML = "<div></div><div class='fecha'></div>";
+      izq.children[0].textContent = km.toFixed(2) + " km";
+      izq.children[1].textContent = f.toLocaleDateString("es-CL") + " " +
+        f.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+      var der = document.createElement("div");
+      der.className = "datos";
+      der.innerHTML = "<div></div><div class='fecha'></div>";
+      der.children[0].textContent = fmtTiempo(s.ms);
+      der.children[1].textContent = media.toFixed(1) + " km/h";
+      li.appendChild(izq); li.appendChild(der);
+      elHist.appendChild(li);
+    });
+  }
+
+  btnInicio.addEventListener("click", arrancar);
+  btnPausa.addEventListener("click", function () { corriendo ? pausar() : continuar(); });
+  btnFin.addEventListener("click", function () {
+    if (confirm("¿Terminar y guardar esta salida?")) terminar();
+  });
+  btnBorrar.addEventListener("click", function () {
+    if (leer().length && confirm("¿Borrar todas las salidas guardadas?")) { guardar([]); pintarHistorial(); }
+  });
+  window.addEventListener("resize", dibujar);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && corriendo) activarPantalla();
+  });
+
+  setInterval(function () { if (corriendo) actualizar(); }, 1000);
+  actualizar(); dibujar(); pintarHistorial();
+})();
+</script>
+</body>
+</html>
